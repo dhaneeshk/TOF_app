@@ -1,0 +1,45 @@
+Metadata-Version: 2.4
+Name: pytof-new
+Version: 0.1.0
+Summary: Modular TOF-MS acquisition application
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: scipy>=1.12
+Requires-Dist: h5py>=3.10
+Requires-Dist: PySide6>=6.6
+Requires-Dist: pyqtgraph>=0.13
+Provides-Extra: test
+Requires-Dist: pytest>=8.0; extra == "test"
+
+# pytof_new
+
+New modular Python application for time-of-flight mass spectrometry acquisition.
+
+This project is separate from the legacy `pyTOF-v23.py` application. The legacy code is used only as a hardware-call reference.
+
+## Current Phase
+
+Implemented through Phase 3:
+
+- Package skeleton and configuration models.
+- Abstract digitizer and delay-generator interfaces.
+- Acquisition state machine and controller.
+- Mock digitizer and mock delay generator.
+- Processing utilities.
+- HDF5 writer.
+- Mock command-line acquisition script.
+
+## Run Tests
+
+```powershell
+python -m pytest pytof_new\tests
+```
+
+## Run Mock Acquisition
+
+```powershell
+python pytof_new\scripts\mock_acquire_batch.py --output pytof_new\mock_run.h5
+```
+
+The mock script acquires 100 synthetic TOF segments, averages them, writes HDF5 data, and shuts down safely.
