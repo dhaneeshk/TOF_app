@@ -35,6 +35,13 @@ def main() -> None:
     bme_diag.add_argument("--pulse-test", action="store_true", help="Activate BME outputs for a finite pulse test; requires PYTOF_RUN_HARDWARE_TESTS=1")
     bme_diag.add_argument("--pulse-count", type=int, default=1, help="Pulse-test trigger count (default 1)")
     bme_diag.add_argument("--repetition-us", type=float, default=111.0, help="Pulse-test repetition period in microseconds (default 111)")
+    bme_diag.add_argument("--tof-window-us", type=float, default=50.0, help="Pulse-test TOF window and default output width in microseconds (default 50)")
+    bme_diag.add_argument("--digitizer-channel", choices=["A", "B", "C", "D", "E", "F"], default="A", help="BME digitizer trigger channel (default A)")
+    bme_diag.add_argument("--push-channel", choices=["A", "B", "C", "D", "E", "F"], default="C", help="BME PUSH trigger channel (default C)")
+    bme_diag.add_argument("--pull-channel", choices=["A", "B", "C", "D", "E", "F"], default="F", help="BME PULL trigger channel (default F)")
+    bme_diag.add_argument("--digitizer-polarity", choices=["pos", "neg"], default="pos", help="Digitizer pulse polarity (default pos)")
+    bme_diag.add_argument("--push-polarity", choices=["pos", "neg"], default="pos", help="PUSH pulse polarity (default pos)")
+    bme_diag.add_argument("--pull-polarity", choices=["pos", "neg"], default="neg", help="PULL pulse polarity (default neg)")
     bme_diag.add_argument("--settle-ms", type=float, default=100.0, help="Delay after activation before readback in milliseconds (default 100)")
 
     args = parser.parse_args()
@@ -108,6 +115,9 @@ def _run_diagnose_bme(args: argparse.Namespace) -> None:
     if args.repetition_us <= 0:
         print("--repetition-us must be positive", file=sys.stderr)
         sys.exit(1)
+    if args.tof_window_us <= 0:
+        print("--tof-window-us must be positive", file=sys.stderr)
+        sys.exit(1)
     if args.settle_ms < 0:
         print("--settle-ms must be non-negative", file=sys.stderr)
         sys.exit(1)
@@ -134,17 +144,29 @@ def _run_diagnose_bme(args: argparse.Namespace) -> None:
 
         if args.pulse_test:
             repetition_s = args.repetition_us * 1e-6
-            tof_window_s = min(50e-6, repetition_s * 0.5)
+            tof_window_s = args.tof_window_us * 1e-6
             config = BMEConfig(
                 advanced_mode=True,
                 tof_window_s=tof_window_s,
-                extraction_region_fill_time_s=max(1e-9, repetition_s - tof_window_s),
+                extraction_region_fill_time_s=repetition_s - tof_window_s,
                 repetition_period_s=repetition_s,
                 digitizer_trigger_width_s=tof_window_s,
                 push_trigger_width_s=tof_window_s,
                 pull_trigger_width_s=tof_window_s,
+                digitizer_channel=args.digitizer_channel,
+                push_channel=args.push_channel,
+                pull_channel=args.pull_channel,
+                digitizer_polarity_positive=args.digitizer_polarity == "pos",
+                push_polarity_positive=args.push_polarity == "pos",
+                pull_polarity_positive=args.pull_polarity == "pos",
             )
+            try:
+                config.validate()
+            except ValueError as exc:
+                print(f"Invalid BME pulse-test configuration: {exc}", file=sys.stderr)
+                sys.exit(1)
             print("\nConfiguring finite BME pulse test...")
+            _print_bme_pulse_table(config, args.pulse_count)
             delay.configure(config)
             delay.arm(args.pulse_count)
             print(f"  Armed trigger count: {args.pulse_count}")
@@ -161,6 +183,20 @@ def _run_diagnose_bme(args: argparse.Namespace) -> None:
         print("\nDisconnecting BME...")
         delay.close()
         print("Done.")
+
+
+def _print_bme_pulse_table(config: BMEConfig, pulse_count: int) -> None:
+    rows = (
+        ("Digitizer", config.digitizer_channel, config.digitizer_polarity_positive, config.digitizer_trigger_delay_s, config.digitizer_trigger_width_s),
+        ("PUSH", config.push_channel, config.push_polarity_positive, config.push_trigger_delay_s, config.push_trigger_width_s),
+        ("PULL", config.pull_channel, config.pull_polarity_positive, config.pull_trigger_delay_s, config.pull_trigger_width_s),
+    )
+    print("  Planned pulse table:")
+    print(f"    Count: {pulse_count}")
+    print(f"    Repetition: {config.repetition_period_s * 1e6:.9g} us")
+    for label, channel, positive, delay_s, width_s in rows:
+        polarity = "POS" if positive else "NEG"
+        print(f"    {label}: channel {channel}, {polarity}, delay {delay_s * 1e6:.9g} us, width {width_s * 1e6:.9g} us")
 
 
 if __name__ == "__main__":

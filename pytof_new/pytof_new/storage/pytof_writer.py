@@ -33,6 +33,7 @@ def save_pytof_spectrum(output_path: Path, axis: np.ndarray, trace: np.ndarray, 
     notes = config.storage.notes.splitlines()[:4]
     lines.extend(f"## {note}" if note else "##" for note in notes)
     lines.extend("##" for _ in range(4 - len(notes)))
+    lines.extend(_bme_header_lines(config))
     lines.extend(f"{float(x)}  {float(y)}" for x, y in zip(mass_axis, trace, strict=True))
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -51,3 +52,18 @@ def _sample_label(molecule: str, surface: str) -> str:
     if surface:
         return f"{molecule}_{surface}_"
     return f"{molecule}_"
+
+
+def _bme_header_lines(config: RunConfig) -> list[str]:
+    bme = config.bme
+    return [
+        f"## BME_MODE:{'ADVANCED' if bme.advanced_mode else 'BASIC'}",
+        f"## BME_TOF_WINDOW_US:{bme.tof_window_s * 1e6:.9g}",
+        f"## BME_EXTRACTION_FILL_US:{bme.extraction_region_fill_time_s * 1e6:.9g}",
+        f"## BME_REPETITION_US:{bme.repetition_period_s * 1e6:.9g}",
+        f"## BME_CHANNELS:DIG={bme.digitizer_channel},PUSH={bme.push_channel},PULL={bme.pull_channel}",
+        f"## BME_POLARITIES:DIG={'POS' if bme.digitizer_polarity_positive else 'NEG'},PUSH={'POS' if bme.push_polarity_positive else 'NEG'},PULL={'POS' if bme.pull_polarity_positive else 'NEG'}",
+        f"## BME_DELAYS_US:DIG={bme.digitizer_trigger_delay_s * 1e6:.9g},PUSH={bme.push_trigger_delay_s * 1e6:.9g},PULL={bme.pull_trigger_delay_s * 1e6:.9g}",
+        f"## BME_WIDTHS_US:DIG={bme.digitizer_trigger_width_s * 1e6:.9g},PUSH={bme.push_trigger_width_s * 1e6:.9g},PULL={bme.pull_trigger_width_s * 1e6:.9g}",
+        f"## BME_TERMINATION_OHM:{bme.trigger_termination_ohm}",
+    ]

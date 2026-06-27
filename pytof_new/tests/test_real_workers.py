@@ -277,3 +277,41 @@ def test_shot_analysis_acquires_n_records(fake, config) -> None:
 
     assert len(results) == 1
     assert finished == [True]
+
+
+def test_shot_analysis_can_use_coordinator(fake, config) -> None:
+    samples = config.digitizer.segment_samples
+    svc = _prepare_service(fake, config)
+    request = SpectrumAcquisitionRequest(
+        mode=SpectrumAcquisitionMode.RAW_MULTI,
+        sample_rate_hz=config.digitizer.sample_rate_hz,
+        segment_samples=samples,
+        pretrigger_samples=config.digitizer.pretrigger_samples,
+        number_of_segments=1,
+        trigger_source=SpectrumTriggerSource.EXTERNAL0,
+    )
+    svc.configure(request)
+    result = SpectrumAcquisitionResult(
+        data=np.ones((1, samples), dtype=np.int8) * 20,
+        plan=svc._digitizer.acquisition_plan,
+        metadata={"bme_actual_trigger_count": 1},
+    )
+    coordinator = _FakeCoordinator(result)
+    config_with_cal = replace(config, processing=replace(config.processing, mass_calibration_enabled=True, mass_calibration=(3.5e-6, 0.0129, 6.27)))
+    worker = RealShotAnalysisWorker(
+        svc,
+        config_with_cal,
+        record_count=3,
+        delay_s=0.0,
+        max_lag_s=1e-7,
+        min_mz=0.0,
+        coordinator=coordinator,
+        request=request,
+    )
+
+    finished: list[bool] = []
+    worker.finished.connect(lambda: finished.append(True))
+    worker.run()
+
+    assert coordinator.start_counts == [1, 1, 1]
+    assert finished == [True]

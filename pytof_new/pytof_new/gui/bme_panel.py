@@ -54,6 +54,9 @@ class BMEPanel(QtWidgets.QGroupBox):
         self.trigger_termination = QtWidgets.QComboBox()
         self.trigger_termination.addItem("50 Ohms", 50)
         self.trigger_termination.addItem("1 kOhm / high-Z", 1000)
+        self.validation_message = QtWidgets.QLabel("")
+        self.validation_message.setWordWrap(True)
+        self.validation_message.setStyleSheet("color: #d18f00;")
         self.output_state = QtWidgets.QLabel("Outputs: disabled")
 
         self.repetition_us.setToolTip("Time between the start of BME trigger pulse sequences.")
@@ -67,6 +70,7 @@ class BMEPanel(QtWidgets.QGroupBox):
         self.push_delay_us.setToolTip("PUSH trigger delay from BME cycle start; must be below TOF window.")
         self.pull_delay_us.setToolTip("PULL trigger delay from BME cycle start; must be below TOF window.")
         self.trigger_termination.setToolTip("BME trigger/output termination setting used by the real BME driver.")
+        self.validation_message.setToolTip("BME timing/channel validation status for the current panel values.")
         self.output_state.setToolTip("Current output-enable state reported by the acquisition workflow.")
 
         adv_layout.addRow("Repetition period (us)", self.repetition_us)
@@ -83,6 +87,7 @@ class BMEPanel(QtWidgets.QGroupBox):
         adv_layout.addRow("PUSH delay (us)", self.push_delay_us)
         adv_layout.addRow("PULL delay (us)", self.pull_delay_us)
         adv_layout.addRow("Trigger termination", self.trigger_termination)
+        adv_layout.addRow("Validation", self.validation_message)
         adv_layout.addRow(self.output_state)
 
         content = QtWidgets.QWidget()
@@ -109,6 +114,7 @@ class BMEPanel(QtWidgets.QGroupBox):
         self.advanced_checkbox.toggled.connect(self._on_advanced_toggled)
         for widget in (self.digitizer_channel, self.push_channel, self.pull_channel, self.digitizer_polarity, self.push_polarity, self.pull_polarity, self.trigger_termination):
             widget.currentIndexChanged.connect(self.settings_changed)
+            widget.currentIndexChanged.connect(self._update_validation_message)
         for widget in (
             self.repetition_us,
             self.digitizer_width_us,
@@ -119,11 +125,13 @@ class BMEPanel(QtWidgets.QGroupBox):
             self.pull_delay_us,
         ):
             widget.valueChanged.connect(self.settings_changed)
+            widget.valueChanged.connect(self._update_validation_message)
 
         set_compact_widths(self, 115)
         self.basic_repetition_readout.setMaximumWidth(115)
         self._sync_basic_derived_values(emit_signal=False)
         self.advanced_group.setEnabled(False)
+        self._update_validation_message()
 
     def set_tof_window_us(self, tof_window_us: float) -> None:
         """Set the digitizer TOF window used for basic BME timing defaults."""
@@ -177,6 +185,18 @@ class BMEPanel(QtWidgets.QGroupBox):
             self._set_spin_silently(self.pull_delay_us, 0.0)
         if emit_signal:
             self.settings_changed.emit()
+        self._update_validation_message()
+
+    @QtCore.Slot()
+    def _update_validation_message(self) -> None:
+        try:
+            self.config().validate()
+        except ValueError as exc:
+            self.validation_message.setStyleSheet("color: #d18f00;")
+            self.validation_message.setText(f"Warning: {exc}")
+            return
+        self.validation_message.setText("OK")
+        self.validation_message.setStyleSheet("color: #4caf50;")
 
     @staticmethod
     def _set_spin_silently(spin: QtWidgets.QDoubleSpinBox, value: float) -> None:

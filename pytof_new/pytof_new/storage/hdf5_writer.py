@@ -62,6 +62,7 @@ class HDF5RunWriter:
         metadata.attrs["q2"] = self.config.storage.q2
         metadata.attrs["uv"] = self.config.storage.uv
         metadata.attrs["notes"] = self.config.storage.notes
+        _write_bme_config_attrs(metadata, self.config)
 
     def append_raw_batch(self, batch: AcquisitionBatch) -> None:
         """Append raw ADC segments and optional timestamps."""
@@ -94,6 +95,7 @@ class HDF5RunWriter:
                 )
             self._timestamps.resize((self._raw_count + segments,))
             self._timestamps[self._raw_count : self._raw_count + segments] = batch.timestamps
+        _write_batch_sync_attrs(self._run["metadata"], batch.metadata)
         self._raw_count += segments
 
     def write_processed(self, processed: ProcessedBatch) -> None:
@@ -160,6 +162,7 @@ def save_cumulative_spectrum(output_path: Path, axis: np.ndarray, trace: np.ndar
         group.attrs["record_mode"] = config.digitizer.record_mode
         group.attrs["hardware_averages_per_record"] = config.digitizer.hardware_averages_per_record
         group.attrs["run_config_json"] = json.dumps(to_plain_dict(config), sort_keys=True)
+        _write_bme_config_attrs(group, config)
 
 
 def save_reference_spectrum(output_path: Path, axis: np.ndarray, trace: np.ndarray, record_count: int, config: RunConfig) -> None:
@@ -175,6 +178,7 @@ def save_reference_spectrum(output_path: Path, axis: np.ndarray, trace: np.ndarr
         group.attrs["record_mode"] = config.digitizer.record_mode
         group.attrs["hardware_averages_per_record"] = config.digitizer.hardware_averages_per_record
         group.attrs["run_config_json"] = json.dumps(to_plain_dict(config), sort_keys=True)
+        _write_bme_config_attrs(group, config)
 
 
 def load_reference_spectrum(input_path: Path) -> ReferenceSpectrum:
@@ -187,3 +191,34 @@ def load_reference_spectrum(input_path: Path) -> ReferenceSpectrum:
             record_count=int(group.attrs["record_count"]),
             run_config_json=str(group.attrs["run_config_json"]),
         )
+
+
+def _write_bme_config_attrs(group: h5py.Group, config: RunConfig) -> None:
+    """Write stable, queryable BME timing/channel metadata attributes."""
+    bme = config.bme
+    group.attrs["bme_advanced_mode"] = bool(bme.advanced_mode)
+    group.attrs["bme_tof_window_s"] = float(bme.tof_window_s)
+    group.attrs["bme_extraction_region_fill_time_s"] = float(bme.extraction_region_fill_time_s)
+    group.attrs["bme_repetition_period_s"] = float(bme.repetition_period_s)
+    group.attrs["bme_digitizer_channel"] = bme.digitizer_channel
+    group.attrs["bme_push_channel"] = bme.push_channel
+    group.attrs["bme_pull_channel"] = bme.pull_channel
+    group.attrs["bme_digitizer_polarity"] = "POS" if bme.digitizer_polarity_positive else "NEG"
+    group.attrs["bme_push_polarity"] = "POS" if bme.push_polarity_positive else "NEG"
+    group.attrs["bme_pull_polarity"] = "POS" if bme.pull_polarity_positive else "NEG"
+    group.attrs["bme_digitizer_trigger_delay_s"] = float(bme.digitizer_trigger_delay_s)
+    group.attrs["bme_push_trigger_delay_s"] = float(bme.push_trigger_delay_s)
+    group.attrs["bme_pull_trigger_delay_s"] = float(bme.pull_trigger_delay_s)
+    group.attrs["bme_digitizer_trigger_width_s"] = float(bme.digitizer_trigger_width_s)
+    group.attrs["bme_push_trigger_width_s"] = float(bme.push_trigger_width_s)
+    group.attrs["bme_pull_trigger_width_s"] = float(bme.pull_trigger_width_s)
+    group.attrs["bme_trigger_termination_ohm"] = int(bme.trigger_termination_ohm)
+
+
+def _write_batch_sync_attrs(group: h5py.Group, metadata: dict[str, Any]) -> None:
+    """Persist synchronization metadata emitted by coordinated real batches."""
+    for key, value in metadata.items():
+        if not (key.startswith("bme_") or key.startswith("spectrum_")):
+            continue
+        if isinstance(value, (str, int, float, bool, np.integer, np.floating, np.bool_)):
+            group.attrs[key] = value

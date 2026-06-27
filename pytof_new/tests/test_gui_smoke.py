@@ -98,6 +98,12 @@ def test_main_window_builds_and_snapshots_config() -> None:
     assert window.bme_panel.push_channel.currentText() == "C"
     assert window.bme_panel.pull_channel.currentText() == "F"
     assert window.bme_panel.pull_polarity.currentText() == "NEG"
+    assert window.bme_panel.validation_message.text() == "OK"
+    window.bme_panel.advanced_checkbox.setChecked(True)
+    window.bme_panel.push_channel.setCurrentText("A")
+    assert "unique" in window.bme_panel.validation_message.text()
+    window.bme_panel.push_channel.setCurrentText("C")
+    window.bme_panel.advanced_checkbox.setChecked(False)
     window.digitizer_panel.tof_window_us.setValue(60.0)
     assert window.bme_panel.repetition_us.value() == pytest.approx(115.0)
     assert window.bme_panel.digitizer_width_us.value() == pytest.approx(60.0)

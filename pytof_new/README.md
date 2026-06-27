@@ -777,6 +777,30 @@ Known warning:
 - BME configuration and arming must not generate physical pulses; physical output generation starts only at explicit BME activation.
 - Verify BME TTL amplitude, Spectrum Ext0 termination/range, and cabling with an oscilloscope before connecting production hardware.
 
+## First Hardware Run Checklist
+
+Before connecting BME outputs to the Spectrum trigger input or extraction electronics:
+
+1. Confirm the Spectrum card is detected with `probe_spectrum.py --info`.
+2. Confirm safe BME discovery with `py -3.12 -m pytof_new.cli diagnose-bme`.
+3. Leave BME outputs disconnected from production hardware and connected only to an oscilloscope/known-safe load.
+4. Confirm BME connect/configure/arm do not emit pulses.
+5. Run one gated BME pulse test with `PYTOF_RUN_HARDWARE_TESTS=1` and `diagnose-bme --pulse-test --pulse-count 1`.
+6. Verify channel A is the Spectrum trigger pulse, channel C is PUSH, and channel F is PULL.
+7. Verify default polarities: A POS, C POS, F NEG.
+8. Verify all delays default to `0 us` and widths follow the TOF window in Basic mode.
+9. Verify repetition period equals `TOF window + extraction region fill time` in Basic mode.
+10. Verify pulse amplitude and termination at the selected load; avoid double termination.
+11. Connect BME channel A to Spectrum Ext0 only after the trigger pulse is verified safe for the Spectrum input range/termination.
+12. Run a one-record coordinated GUI acquisition and verify Spectrum record count equals BME accepted trigger count.
+
+Troubleshooting quick checks:
+
+- BME count too low: BME stopped early, preset count misconfigured, or internal trigger sequence interrupted.
+- BME count correct but Spectrum timeout: check cabling, Ext0 threshold, pulse width, termination, and trigger edge.
+- Spectrum completes but BME count differs: check counter reset/preset bookkeeping and coordinator metadata.
+- Incorrect PUSH/PULL polarity: verify advanced BME polarity settings and actual SG08p output behavior on the oscilloscope.
+
 ## Recommended Workflow For Hardware Changes
 
 1. Reproduce Spectrum register behavior in `scripts/probe_spectrum.py` when changing Spectrum configuration.

@@ -234,11 +234,15 @@ class RealShotAnalysisWorker(QtCore.QObject):
         delay_s: float,
         max_lag_s: float,
         min_mz: float,
+        coordinator: RealBatchCoordinator | None = None,
+        request=None,
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = service
         self._config = config
+        self._coordinator = coordinator
+        self._request = request
         self._record_count = record_count
         self._delay_s = delay_s
         self._max_lag_s = max_lag_s
@@ -250,9 +254,15 @@ class RealShotAnalysisWorker(QtCore.QObject):
         self._latest_processed: Any = None
         self._current_index = 0
 
-        self._request_acquire.connect(self._service.acquire)
-        self._service.result_ready.connect(self._on_result)
-        self._service.error_occurred.connect(self._on_service_error)
+        if self._coordinator is None:
+            self._request_acquire.connect(self._service.acquire)
+            self._service.result_ready.connect(self._on_result)
+            self._service.error_occurred.connect(self._on_service_error)
+        else:
+            self._request_acquire.connect(self._request_coordinated_acquire)
+            self._coordinator.result_ready.connect(self._on_result)
+            self._coordinator.error_occurred.connect(self._on_service_error)
+            self._coordinator.log_message.connect(self.log_message)
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -266,6 +276,10 @@ class RealShotAnalysisWorker(QtCore.QObject):
     def request_stop(self) -> None:
         """Stop after the current record."""
         self._stop_requested = True
+        if self._coordinator is not None:
+            self._coordinator.request_stop()
+            self._finish()
+            return
         self._service.abort()
         if self._service.state != ServiceState.ACQUIRING:
             self._finish()
@@ -339,18 +353,42 @@ class RealShotAnalysisWorker(QtCore.QObject):
             return
         self._request_acquire.emit()
 
+    @QtCore.Slot()
+    def _request_coordinated_acquire(self) -> None:
+        if self._coordinator is None:
+            return
+        request = self._request
+        if request is None and self._service._digitizer.acquisition_plan is not None:
+            request = self._service._digitizer.acquisition_plan.request
+        if request is None:
+            self.error.emit("Coordinated shot analysis requires a configured Spectrum request")
+            self._finish()
+            return
+        self._coordinator.start_batch(required_bme_triggers_for_request(request))
+
     def _finish(self) -> None:
         if self._finished:
             return
         self._finished = True
         try:
-            self._service.result_ready.disconnect(self._on_result)
+            if self._coordinator is None:
+                self._service.result_ready.disconnect(self._on_result)
+            else:
+                self._coordinator.result_ready.disconnect(self._on_result)
         except (RuntimeError, TypeError):
             pass
         try:
-            self._service.error_occurred.disconnect(self._on_service_error)
+            if self._coordinator is None:
+                self._service.error_occurred.disconnect(self._on_service_error)
+            else:
+                self._coordinator.error_occurred.disconnect(self._on_service_error)
         except (RuntimeError, TypeError):
             pass
+        if self._coordinator is not None:
+            try:
+                self._coordinator.log_message.disconnect(self.log_message)
+            except (RuntimeError, TypeError):
+                pass
         self.finished.emit()
 
 

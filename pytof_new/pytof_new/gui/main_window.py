@@ -820,8 +820,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._simulation_mode:
             self._shot_analysis_worker = ShotAnalysisWorker(config, record_count, delay_s, max_lag_s, min_mz)
         else:
+            if self._service is None or self._bme_service is None:
+                self._show_error("Real hardware services are not connected")
+                return
+            coordinator = RealBatchCoordinator(self._service, self._bme_service, parent=self)
+            coordinator.state_changed.connect(lambda state: self.log_panel.append(f"Shot analysis coordinator: {state}"))
             self._shot_analysis_worker = RealShotAnalysisWorker(
-                self._service, config, record_count, delay_s, max_lag_s, min_mz,
+                self._service,
+                config,
+                record_count,
+                delay_s,
+                max_lag_s,
+                min_mz,
+                coordinator=coordinator,
+                request=request,
             )
         self._shot_analysis_worker.moveToThread(self._shot_analysis_thread)
         self._shot_analysis_thread.started.connect(self._shot_analysis_worker.run)

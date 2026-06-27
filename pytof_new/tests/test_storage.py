@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from pytof_new.acquisition.controller import AcquisitionController
-from pytof_new.config.models import DigitizerConfig, ProcessingConfig, RunConfig, StorageConfig
+from pytof_new.config.models import BMEConfig, DigitizerConfig, ProcessingConfig, RunConfig, StorageConfig
 from pytof_new.hardware.mock_delay_generator import MockDelayGenerator
 from pytof_new.hardware.mock_digitizer import MockDigitizer
 from pytof_new.processing.pipeline import process_batch
@@ -15,6 +15,7 @@ from pytof_new.storage.pytof_writer import save_pytof_spectrum
 def test_hdf5_writer_saves_raw_processed_and_metadata(tmp_path) -> None:
     output = tmp_path / "run.h5"
     config = RunConfig(
+        bme=BMEConfig(push_channel="C", pull_channel="F", pull_polarity_positive=False),
         digitizer=DigitizerConfig(number_of_segments=4, segment_samples=512, pretrigger_samples=32),
         storage=StorageConfig(output_path=output),
     )
@@ -39,6 +40,37 @@ def test_hdf5_writer_saves_raw_processed_and_metadata(tmp_path) -> None:
         assert run["metadata"].attrs["record_count"] == 4
         assert run["metadata"].attrs["trigger_count"] == 4 * config.digitizer.hardware_averages_per_record
         assert run["metadata"].attrs["record_mode"] == "hardware_average"
+        assert run["metadata"].attrs["bme_repetition_period_s"] == pytest.approx(config.bme.repetition_period_s)
+        assert run["metadata"].attrs["bme_push_channel"] == "C"
+        assert run["metadata"].attrs["bme_pull_polarity"] == "NEG"
+
+
+def test_hdf5_writer_persists_coordinator_sync_metadata(tmp_path) -> None:
+    output = tmp_path / "run.h5"
+    config = RunConfig(storage=StorageConfig(output_path=output))
+    batch = AcquisitionController(MockDigitizer(), MockDelayGenerator())
+    batch.connect_hardware()
+    acquired = batch.acquire_batch(config)
+    batch.disconnect_hardware()
+    acquired.metadata.update(
+        {
+            "bme_expected_trigger_count": 8,
+            "bme_actual_trigger_count": 8,
+            "bme_status": 0x44,
+            "spectrum_expected_records": 1,
+            "spectrum_actual_records": 1,
+        }
+    )
+
+    with HDF5RunWriter(output, config) as writer:
+        writer.append_raw_batch(acquired)
+
+    with h5py.File(output, "r") as handle:
+        metadata = handle["run_0001/metadata"].attrs
+        assert metadata["bme_expected_trigger_count"] == 8
+        assert metadata["bme_actual_trigger_count"] == 8
+        assert metadata["bme_status"] == 0x44
+        assert metadata["spectrum_actual_records"] == 1
 
 
 def test_pytof_writer_saves_header_and_mass_axis(tmp_path) -> None:
@@ -71,8 +103,12 @@ def test_pytof_writer_saves_header_and_mass_axis(tmp_path) -> None:
     assert lines[11] == "## note 2"
     assert lines[12] == "##"
     assert lines[13] == "##"
-    assert len(lines[14].split()) == 2
-    first_mz = float(lines[14].split()[0])
+    assert any(line.startswith("## BME_REPETITION_US:") for line in lines)
+    assert "## BME_CHANNELS:DIG=A,PUSH=C,PULL=F" in lines
+    assert "## BME_POLARITIES:DIG=POS,PUSH=POS,PULL=NEG" in lines
+    first_data_line = next(line for line in lines if not line.startswith("##"))
+    assert len(first_data_line.split()) == 2
+    first_mz = float(first_data_line.split()[0])
     assert first_mz == pytest.approx(config.processing.mass_calibration[0] * 1000.0**2 + config.processing.mass_calibration[1] * 1000.0 + config.processing.mass_calibration[2])
 
 
