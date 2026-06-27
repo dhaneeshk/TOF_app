@@ -87,6 +87,33 @@ py -3.12 pytof_new\scripts\probe_spectrum.py --average --avg-records 8
 py -3.12 pytof_new\scripts\probe_spectrum.py --average16 --avg-records 8
 ```
 
+Run the standalone BME probe script safely:
+
+```powershell
+py -3.12 pytof_new\scripts\probe_bme.py --info
+py -3.12 pytof_new\scripts\probe_bme.py --configure --tof-window-us 50 --fill-us 55
+py -3.12 pytof_new\scripts\probe_bme.py --arm --pulse-count 1
+```
+
+BME output activation is gated:
+
+```powershell
+$env:PYTOF_RUN_HARDWARE_TESTS=1
+py -3.12 pytof_new\scripts\probe_bme.py --pulse-test --pulse-count 1 --tof-window-us 50 --fill-us 55
+```
+
+Run the combined Spectrum+BME probe after oscilloscope setup is safe:
+
+```powershell
+$env:PYTOF_RUN_HARDWARE_TESTS=1
+py -3.12 pytof_new\scripts\probe_spectrum_bme.py --mode raw_multi
+py -3.12 pytof_new\scripts\probe_spectrum_bme.py --mode average_32bit --averages 32
+py -3.12 pytof_new\scripts\probe_spectrum_bme.py --mode average_16bit --averages 32
+py -3.12 pytof_new\scripts\probe_spectrum_bme.py --mode all
+```
+
+The combined probe first verifies that BME connect/configure/arm does not trigger Spectrum. It then activates BME and looks for pickup/ringing events from A/C/F pulse edges at `0`, `5`, `7`, `10`, `12`, and `17 us`. It saves `.npy` and `.csv` traces for visual inspection.
+
 To DMA averaged records, external trigger pulses must be present:
 
 ```powershell
@@ -785,7 +812,7 @@ Before connecting BME outputs to the Spectrum trigger input or extraction electr
 2. Confirm safe BME discovery with `py -3.12 -m pytof_new.cli diagnose-bme`.
 3. Leave BME outputs disconnected from production hardware and connected only to an oscilloscope/known-safe load.
 4. Confirm BME connect/configure/arm do not emit pulses.
-5. Run one gated BME pulse test with `PYTOF_RUN_HARDWARE_TESTS=1` and `diagnose-bme --pulse-test --pulse-count 1`.
+5. Run one gated BME pulse test with `PYTOF_RUN_HARDWARE_TESTS=1` and `probe_bme.py --pulse-test --pulse-count 1`.
 6. Verify channel A is the Spectrum trigger pulse, channel C is PUSH, and channel F is PULL.
 7. Verify default polarities: A POS, C POS, F NEG.
 8. Verify all delays default to `0 us` and widths follow the TOF window in Basic mode.
@@ -793,6 +820,8 @@ Before connecting BME outputs to the Spectrum trigger input or extraction electr
 10. Verify pulse amplitude and termination at the selected load; avoid double termination.
 11. Connect BME channel A to Spectrum Ext0 only after the trigger pulse is verified safe for the Spectrum input range/termination.
 12. Run a one-record coordinated GUI acquisition and verify Spectrum record count equals BME accepted trigger count.
+13. Run `probe_spectrum_bme.py --mode raw_multi` and inspect the saved trace for the six expected pickup events.
+14. Run `probe_spectrum_bme.py --mode average_32bit` and `--mode average_16bit` when 16-bit averaging is supported.
 
 Troubleshooting quick checks:
 

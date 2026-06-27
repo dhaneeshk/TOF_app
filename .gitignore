@@ -14,3 +14,5 @@ dist/
 *.hdf5
 *.pytof
 *.reference.h5
+spectrum_bme_probe_*.csv
+spectrum_bme_probe_*.npy
