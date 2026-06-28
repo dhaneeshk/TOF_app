@@ -16,3 +16,5 @@ dist/
 *.reference.h5
 spectrum_bme_probe_*.csv
 spectrum_bme_probe_*.npy
+spectrum_bme_probe_*.npz
+spectrum_bme_probe_*.json

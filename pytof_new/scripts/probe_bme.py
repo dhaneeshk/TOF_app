@@ -52,8 +52,11 @@ def main() -> int:
     parser.add_argument("--digitizer-polarity", choices=("pos", "neg"), default="pos")
     parser.add_argument("--push-polarity", choices=("pos", "neg"), default="pos")
     parser.add_argument("--pull-polarity", choices=("pos", "neg"), default="neg")
-    parser.add_argument("--termination", type=int, choices=(50, 1000), default=50)
-    parser.add_argument("--settle-ms", type=float, default=100.0, help="Wait after activation before readback")
+    parser.add_argument("--enabled-channels", default="A", help="Comma-separated output channels to enable; default A for first safe pulse test")
+    parser.add_argument("--termination", type=int, choices=(50, 1000), default=50, help="BME trigger/output termination setting passed to the driver")
+    parser.add_argument("--go-signal", choices=("local-primary", "master-primary"), default="local-primary", help="Channel GoSignal source")
+    parser.add_argument("--settle-ms", type=float, default=100.0, help="Extra wait after expected pulse duration before final readback")
+    parser.add_argument("--timeout-s", type=float, default=None, help="Pulse-test timeout; default derives from count and repetition")
     args = parser.parse_args()
 
     if not any((args.info, args.configure, args.arm, args.pulse_test)):
@@ -64,9 +67,12 @@ def main() -> int:
     if args.pulse_count <= 0:
         print("ERROR: --pulse-count must be positive", file=sys.stderr)
         return 1
+    if args.settle_ms < 0:
+        print("ERROR: --settle-ms must be non-negative", file=sys.stderr)
+        return 1
 
-    config = _config_from_args(args)
     try:
+        config = _config_from_args(args)
         config.validate()
     except ValueError as exc:
         print(f"ERROR: invalid BME timing: {exc}", file=sys.stderr)
@@ -96,17 +102,24 @@ def main() -> int:
         if args.pulse_test:
             print("\nActivating BME outputs now")
             delay.start()
-            time.sleep(args.settle_ms / 1000.0)
+            reached = _wait_for_trigger_count(delay, args.pulse_count, config.repetition_period_s, args.settle_ms / 1000.0, args.timeout_s)
             print(f"Status after activation: {delay.read_status()}")
-            print(f"Trigger counter after activation: {delay.read_trigger_count()}")
+            actual_count = delay.read_trigger_count()
+            print(f"Trigger counter after activation: {actual_count}")
             delay.stop()
             print("BME outputs deactivated")
+            if not reached or actual_count != args.pulse_count:
+                print(f"ERROR: BME trigger counter mismatch: expected {args.pulse_count}, got {actual_count}", file=sys.stderr)
+                return 1
         else:
             print("\nSafe probe complete. Outputs were not activated.")
         return 0
     finally:
         print("Closing BME...")
-        delay.close()
+        try:
+            delay.emergency_stop()
+        finally:
+            delay.close()
 
 
 def _hardware_tests_enabled() -> bool:
@@ -116,6 +129,7 @@ def _hardware_tests_enabled() -> bool:
 def _config_from_args(args: argparse.Namespace) -> BMEConfig:
     tof_window_us = float(args.tof_window_us)
     repetition_us = float(args.repetition_us) if args.repetition_us is not None else tof_window_us + float(args.fill_us)
+    enabled_roles = _enabled_roles_from_channels(args.enabled_channels, args)
     return BMEConfig(
         advanced_mode=True,
         tof_window_s=tof_window_us * 1e-6,
@@ -130,11 +144,39 @@ def _config_from_args(args: argparse.Namespace) -> BMEConfig:
         digitizer_channel=args.digitizer_channel,
         push_channel=args.push_channel,
         pull_channel=args.pull_channel,
+        enabled_output_roles=enabled_roles,
         digitizer_polarity_positive=args.digitizer_polarity == "pos",
         push_polarity_positive=args.push_polarity == "pos",
         pull_polarity_positive=args.pull_polarity == "pos",
         trigger_termination_ohm=args.termination,
+        go_signal=args.go_signal.replace("-", "_"),
     )
+
+
+def _enabled_roles_from_channels(value: str, args: argparse.Namespace) -> tuple[str, ...]:
+    requested = {part.strip().upper() for part in value.split(",") if part.strip()}
+    if not requested:
+        raise ValueError("--enabled-channels must name at least one channel")
+    channel_to_role = {
+        args.digitizer_channel.upper(): "digitizer",
+        args.push_channel.upper(): "push",
+        args.pull_channel.upper(): "pull",
+    }
+    unknown = sorted(channel for channel in requested if channel not in channel_to_role)
+    if unknown:
+        raise ValueError(f"enabled channel(s) {', '.join(unknown)} are not configured as digitizer/PUSH/PULL outputs")
+    return tuple(channel_to_role[channel] for channel in sorted(requested))
+
+
+def _wait_for_trigger_count(delay: BMEDelayGenerator, expected: int, repetition_s: float, settle_s: float, timeout_s: float | None) -> bool:
+    expected_duration_s = max(0.0, expected * repetition_s)
+    deadline = time.monotonic() + (timeout_s if timeout_s is not None else max(1.0, expected_duration_s + settle_s + 0.5))
+    while time.monotonic() < deadline:
+        if delay.read_trigger_count() >= expected:
+            time.sleep(settle_s)
+            return True
+        time.sleep(min(0.05, max(0.001, repetition_s)))
+    return delay.read_trigger_count() >= expected
 
 
 def _print_identity(delay: BMEDelayGenerator) -> None:
@@ -155,6 +197,8 @@ def _print_pulse_table(config: BMEConfig, pulse_count: int) -> None:
     print("Planned BME pulses:")
     print(f"  Count: {pulse_count}")
     print(f"  Repetition: {config.repetition_period_s * 1e6:.9g} us")
+    print(f"  Enabled roles: {', '.join(config.enabled_output_roles)}")
+    print(f"  GoSignal: {config.go_signal}")
     rows = (
         ("Digitizer", config.digitizer_channel, config.digitizer_polarity_positive, config.digitizer_trigger_delay_s, config.digitizer_trigger_width_s),
         ("PUSH", config.push_channel, config.push_polarity_positive, config.push_trigger_delay_s, config.push_trigger_width_s),

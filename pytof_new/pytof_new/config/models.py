@@ -120,10 +120,12 @@ class BMEConfig:
     digitizer_channel: str = "A"
     push_channel: str = "C"
     pull_channel: str = "F"
+    enabled_output_roles: tuple[str, ...] = ("digitizer", "push", "pull")
     digitizer_polarity_positive: bool = True
     push_polarity_positive: bool = True
     pull_polarity_positive: bool = False
     trigger_termination_ohm: int = 50
+    go_signal: Literal["local_primary", "master_primary"] = "local_primary"
 
     def validate(self) -> None:
         """Validate delay generator settings."""
@@ -153,8 +155,16 @@ class BMEConfig:
             raise ValueError("BME channels must be one of A, B, C, D, E, F")
         if len(set(channels)) != len(channels):
             raise ValueError("BME output channels must be unique")
+        valid_roles = {"digitizer", "push", "pull"}
+        roles = tuple(role.lower() for role in self.enabled_output_roles)
+        if any(role not in valid_roles for role in roles):
+            raise ValueError("enabled_output_roles must contain only digitizer, push, or pull")
+        if len(set(roles)) != len(roles):
+            raise ValueError("enabled_output_roles must be unique")
         if self.trigger_termination_ohm not in {50, 1000}:
             raise ValueError("trigger_termination_ohm must be 50 or 1000")
+        if self.go_signal not in {"local_primary", "master_primary"}:
+            raise ValueError("go_signal must be 'local_primary' or 'master_primary'")
 
 
 @dataclass(frozen=True)

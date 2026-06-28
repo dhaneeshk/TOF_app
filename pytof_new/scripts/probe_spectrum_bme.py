@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 from pathlib import Path
 import sys
@@ -22,7 +23,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pytof_new.config.models import BMEConfig
-from pytof_new.exceptions import DigitizerError
 from pytof_new.hardware.bme_delay_generator import BMEDelayGenerator
 from pytof_new.hardware.bme_driver import BMEDriverApi
 from pytof_new.hardware.spectrum_digitizer import SpectrumDigitizer
@@ -30,7 +30,7 @@ from pytof_new.hardware.spectrum_driver import SpectrumDriverError
 from pytof_new.hardware.spectrum_models import SpectrumAcquisitionMode, SpectrumAcquisitionRequest, SpectrumTriggerSource
 
 
-EVENTS_US = (
+DEFAULT_EVENTS_US = (
     ("A start", 0.0),
     ("C start", 5.0),
     ("A end", 7.0),
@@ -55,9 +55,10 @@ def main() -> int:
     parser.add_argument("--safety-timeout-s", type=float, default=0.5)
     parser.add_argument("--acquire-timeout-s", type=float, default=5.0)
     parser.add_argument("--averages", type=int, default=32)
-    parser.add_argument("--pulse-count", type=int, default=None, help="Defaults to Spectrum physical trigger count")
+    parser.add_argument("--pulse-count", type=int, default=None, help="Defaults to Spectrum physical trigger count; override requires --allow-trigger-count-mismatch")
+    parser.add_argument("--allow-trigger-count-mismatch", action="store_true", help="Allow --pulse-count to differ from Spectrum-required triggers")
     parser.add_argument("--tof-window-us", type=float, default=25.0)
-    parser.add_argument("--repetition-us", type=float, default=40.0)
+    parser.add_argument("--repetition-us", type=float, default=111.0)
     parser.add_argument("--edge-width-us", type=float, default=7.0)
     parser.add_argument("--push-delay-us", type=float, default=5.0)
     parser.add_argument("--pull-delay-us", type=float, default=10.0)
@@ -73,6 +74,9 @@ def main() -> int:
         return 1
     if args.pretrigger >= args.segment_samples:
         print("ERROR: --pretrigger must be smaller than --segment-samples", file=sys.stderr)
+        return 1
+    if args.segments <= 0 or args.averages <= 0:
+        print("ERROR: --segments and --averages must be positive", file=sys.stderr)
         return 1
 
     modes = ["raw_multi", "average_32bit", "average_16bit"] if args.mode == "all" else [args.mode]
@@ -90,8 +94,24 @@ def main() -> int:
             print(f"\n=== Mode: {mode_name} ===")
             request = _request_for_mode(args, mode_name)
             physical_triggers = request.number_of_segments * (request.averages_per_segment if mode_name != "raw_multi" else 1)
+            if args.pulse_count is not None and args.pulse_count != physical_triggers and not args.allow_trigger_count_mismatch:
+                print(
+                    f"ERROR: --pulse-count {args.pulse_count} differs from Spectrum-required triggers {physical_triggers}. "
+                    "Use --allow-trigger-count-mismatch only for deliberate mismatch testing.",
+                    file=sys.stderr,
+                )
+                failures += 1
+                continue
             pulse_count = args.pulse_count if args.pulse_count is not None else physical_triggers
             bme_config = _bme_config(args)
+            try:
+                bme_config.validate()
+                _validate_repetition_vs_record(request, bme_config)
+            except ValueError as exc:
+                print(f"ERROR: invalid combined probe configuration: {exc}", file=sys.stderr)
+                failures += 1
+                continue
+            events_us = expected_events_us(bme_config)
 
             if not args.skip_safety:
                 if not _run_no_early_pulse_check(spectrum, bme, request, bme_config, pulse_count, args.safety_timeout_s):
@@ -104,18 +124,18 @@ def main() -> int:
                 continue
             trace = _first_trace(result.data)
             prefix = Path(f"{args.output_prefix}_{mode_name}")
-            _save_trace(prefix, trace, request.sample_rate_hz, request.pretrigger_samples)
-            detections = detect_pickup_events(
-                trace,
+            _save_result(prefix, result.data, request, bme_config, pulse_count, bme.read_trigger_count(), bme.read_status())
+            detections = detect_pickup_events_for_records(
+                result.data,
                 sample_rate_hz=request.sample_rate_hz,
                 pretrigger_samples=request.pretrigger_samples,
-                events_us=EVENTS_US,
+                events_us=events_us,
                 window_us=args.window_us,
                 min_sigma=args.min_sigma,
                 min_abs=args.min_abs,
             )
             _print_detections(detections)
-            if not all(item["detected"] for item in detections):
+            if not all(item["detection_fraction"] > 0 for item in detections):
                 print("WARNING: not all expected pickup events were detected automatically. Inspect saved trace files.")
         return 1 if failures else 0
     finally:
@@ -172,6 +192,29 @@ def _bme_config(args: argparse.Namespace) -> BMEConfig:
     )
 
 
+def _validate_repetition_vs_record(request: SpectrumAcquisitionRequest, config: BMEConfig) -> None:
+    record_duration_s = request.segment_samples / request.sample_rate_hz
+    rearm_margin_s = (80 + request.pretrigger_samples) / request.sample_rate_hz
+    minimum_s = record_duration_s + rearm_margin_s
+    if config.repetition_period_s <= minimum_s:
+        raise ValueError(
+            "BME repetition period must exceed Spectrum record duration plus rearm margin "
+            f"({config.repetition_period_s * 1e6:.3f} us <= {minimum_s * 1e6:.3f} us)"
+        )
+
+
+def expected_events_us(config: BMEConfig) -> tuple[tuple[str, float], ...]:
+    events = (
+        (f"{config.digitizer_channel} start", config.digitizer_trigger_delay_s * 1e6),
+        (f"{config.digitizer_channel} end", (config.digitizer_trigger_delay_s + config.digitizer_trigger_width_s) * 1e6),
+        (f"{config.push_channel} start", config.push_trigger_delay_s * 1e6),
+        (f"{config.push_channel} end", (config.push_trigger_delay_s + config.push_trigger_width_s) * 1e6),
+        (f"{config.pull_channel} start", config.pull_trigger_delay_s * 1e6),
+        (f"{config.pull_channel} end", (config.pull_trigger_delay_s + config.pull_trigger_width_s) * 1e6),
+    )
+    return tuple(sorted(events, key=lambda item: item[1]))
+
+
 def _run_no_early_pulse_check(
     spectrum: SpectrumDigitizer,
     bme: BMEDelayGenerator,
@@ -181,7 +224,18 @@ def _run_no_early_pulse_check(
     timeout_s: float,
 ) -> bool:
     print("Safety phase: Spectrum waits while BME connect/configure/arm occurs; expected result is timeout.")
-    safety_request = SpectrumAcquisitionRequest(**{**request.__dict__, "timeout_s": timeout_s})
+    safety_request = SpectrumAcquisitionRequest(
+        mode=SpectrumAcquisitionMode.RAW_MULTI,
+        sample_rate_hz=request.sample_rate_hz,
+        segment_samples=request.segment_samples,
+        pretrigger_samples=request.pretrigger_samples,
+        number_of_segments=1,
+        averages_per_segment=1,
+        trigger_source=SpectrumTriggerSource.EXTERNAL0,
+        input_range_v=request.input_range_v,
+        trigger_level_v=request.trigger_level_v,
+        timeout_s=timeout_s,
+    )
     spectrum.configure_request(safety_request)
     spectrum.prepare_configured_acquisition()
     try:
@@ -204,8 +258,7 @@ def _run_no_early_pulse_check(
         print(f"FAIL: Spectrum acquired data before BME activation: shape={result.data.shape}")
         return False
     finally:
-        spectrum.stop()
-        bme.stop()
+        _safe_stop_bme_then_spectrum(bme, spectrum)
 
 
 def _run_activation_acquisition(
@@ -225,7 +278,9 @@ def _run_activation_acquisition(
     bme.stop()
     bme.configure(config)
     bme.arm(pulse_count)
-    print("Planned BME events: A 0-7 us, C 5-12 us, F 10-17 us")
+    print("Planned BME events:")
+    for label, time_us in expected_events_us(config):
+        print(f"  {label}: {time_us:.9g} us")
     spectrum.prepare_configured_acquisition()
     try:
         spectrum.start_prepared_acquisition()
@@ -236,7 +291,8 @@ def _run_activation_acquisition(
         print(f"PASS: Spectrum acquired data: shape={result.data.shape} dtype={result.data.dtype}")
         print(f"BME trigger counter: expected {pulse_count}, actual {actual_count}, status {status}")
         if actual_count != pulse_count:
-            print("WARNING: BME counter does not match expected pulse count")
+            print("FAIL: BME counter does not match expected pulse count")
+            return None
         return result
     except SpectrumDriverError as exc:
         if _is_timeout(spectrum, exc):
@@ -244,8 +300,21 @@ def _run_activation_acquisition(
             return None
         raise
     finally:
-        spectrum.stop()
+        _safe_stop_bme_then_spectrum(bme, spectrum)
+
+
+def _safe_stop_bme_then_spectrum(bme: BMEDelayGenerator, spectrum: SpectrumDigitizer) -> None:
+    errors = []
+    try:
         bme.stop()
+    except Exception as exc:
+        errors.append(f"BME stop failed: {exc}")
+    try:
+        spectrum.stop()
+    except Exception as exc:
+        errors.append(f"Spectrum stop failed: {exc}")
+    for message in errors:
+        print(f"WARNING: {message}", file=sys.stderr)
 
 
 def _is_timeout(spectrum: SpectrumDigitizer, exc: SpectrumDriverError) -> bool:
@@ -267,7 +336,7 @@ def detect_pickup_events(
     *,
     sample_rate_hz: float,
     pretrigger_samples: int,
-    events_us=EVENTS_US,
+    events_us=DEFAULT_EVENTS_US,
     window_us: float = 0.4,
     min_sigma: float = 6.0,
     min_abs: float = 2.0,
@@ -308,13 +377,61 @@ def detect_pickup_events(
     return results
 
 
+def detect_pickup_events_for_records(
+    data: np.ndarray,
+    *,
+    sample_rate_hz: float,
+    pretrigger_samples: int,
+    events_us=DEFAULT_EVENTS_US,
+    window_us: float = 0.4,
+    min_sigma: float = 6.0,
+    min_abs: float = 2.0,
+) -> list[dict[str, object]]:
+    array = np.asarray(data)
+    records = array.reshape((1, array.shape[0])) if array.ndim == 1 else array.reshape((-1, array.shape[-1]))
+    per_record = [
+        detect_pickup_events(
+            record,
+            sample_rate_hz=sample_rate_hz,
+            pretrigger_samples=pretrigger_samples,
+            events_us=events_us,
+            window_us=window_us,
+            min_sigma=min_sigma,
+            min_abs=min_abs,
+        )
+        for record in records
+    ]
+    summary = []
+    for event_index, (label, expected_us) in enumerate(events_us):
+        items = [record[event_index] for record in per_record]
+        detected = [item for item in items if item["detected"]]
+        peak_times = [float(item["peak_time_us"]) for item in detected]
+        summary.append(
+            {
+                "label": label,
+                "expected_us": float(expected_us),
+                "record_count": len(items),
+                "detected_count": len(detected),
+                "detection_fraction": len(detected) / len(items) if items else 0.0,
+                "mean_peak_time_us": float(np.mean(peak_times)) if peak_times else float("nan"),
+                "std_peak_time_us": float(np.std(peak_times)) if peak_times else float("nan"),
+                "max_peak_derivative": max(float(item["peak_derivative"]) for item in items) if items else 0.0,
+                "threshold": max(float(item["threshold"]) for item in items) if items else 0.0,
+            }
+        )
+    return summary
+
+
 def _print_detections(detections: list[dict[str, object]]) -> None:
     print("Pickup detection (derivative-based, inspect trace if WARN):")
     for item in detections:
-        status = "PASS" if item["detected"] else "WARN"
+        status = "PASS" if item.get("detection_fraction", 0.0) > 0 else "WARN"
         print(
             f"  {status}: {item['label']} expected {item['expected_us']:.3g} us, "
-            f"peak at {item['peak_time_us']:.3g} us, derivative {item['peak_derivative']:.4g}, threshold {item['threshold']:.4g}"
+            f"detected {item.get('detected_count', 0)}/{item.get('record_count', 1)} records, "
+            f"mean peak {item.get('mean_peak_time_us', float('nan')):.3g} us, "
+            f"std {item.get('std_peak_time_us', float('nan')):.3g} us, "
+            f"max derivative {item.get('max_peak_derivative', 0.0):.4g}, threshold {item['threshold']:.4g}"
         )
 
 
@@ -326,6 +443,30 @@ def _save_trace(prefix: Path, trace: np.ndarray, sample_rate_hz: float, pretrigg
         writer.writerow(["time_us", "adc"])
         writer.writerows(zip(time_us, trace, strict=True))
     print(f"Saved trace: {prefix.with_suffix('.npy')} and {prefix.with_suffix('.csv')}")
+
+
+def _save_result(
+    prefix: Path,
+    data: np.ndarray,
+    request: SpectrumAcquisitionRequest,
+    config: BMEConfig,
+    expected_count: int,
+    actual_count: int,
+    bme_status: int,
+) -> None:
+    trace = _first_trace(data)
+    _save_trace(prefix, trace, request.sample_rate_hz, request.pretrigger_samples)
+    np.savez_compressed(prefix.with_suffix(".npz"), data=data)
+    metadata = {
+        "spectrum_request": {key: str(value) for key, value in request.__dict__.items()},
+        "bme_config": {key: str(value) for key, value in config.__dict__.items()},
+        "bme_expected_trigger_count": expected_count,
+        "bme_actual_trigger_count": actual_count,
+        "bme_status": bme_status,
+        "expected_events_us": list(expected_events_us(config)),
+    }
+    prefix.with_suffix(".json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"Saved full result: {prefix.with_suffix('.npz')} and metadata {prefix.with_suffix('.json')}")
 
 
 if __name__ == "__main__":

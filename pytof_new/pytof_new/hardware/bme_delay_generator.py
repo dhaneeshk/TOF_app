@@ -18,6 +18,8 @@ from pytof_new.exceptions import DelayGeneratorError
 from pytof_new.hardware.bme_constants import (
     CRYSTAL_OSCILLATOR,
     DELAY_CHANNEL_IDS,
+    LOCAL_PRIMARY,
+    MASTER_PRIMARY,
     ORDINARY_TOF_GO_SIGNAL,
     SUPPORTED_SG08P_PRODUCTS,
 )
@@ -269,18 +271,19 @@ class BMEDelayGenerator(DelayGeneratorBase):
 
     def _program_channel(self, config: BMEConfig, channel: str) -> None:
         channel = channel.upper()
+        enabled_roles = {role.lower() for role in config.enabled_output_roles}
         if channel == config.digitizer_channel.upper():
-            enabled = True
+            enabled = "digitizer" in enabled_roles
             delay_s = config.digitizer_trigger_delay_s
             width_s = config.digitizer_trigger_width_s
             positive = config.digitizer_polarity_positive
         elif channel == config.push_channel.upper():
-            enabled = True
+            enabled = "push" in enabled_roles
             delay_s = config.push_trigger_delay_s
             width_s = config.push_trigger_width_s
             positive = config.push_polarity_positive
         elif channel == config.pull_channel.upper():
-            enabled = True
+            enabled = "pull" in enabled_roles
             delay_s = config.pull_trigger_delay_s
             width_s = config.pull_trigger_width_s
             positive = config.pull_polarity_positive
@@ -295,7 +298,7 @@ class BMEDelayGenerator(DelayGeneratorBase):
             pulse_width_us=width_s * 1e6,
             output_modulo=1,
             output_offset=0,
-            go_signal=ORDINARY_TOF_GO_SIGNAL if enabled else 0,
+            go_signal=_go_signal_value(config.go_signal) if enabled else 0,
             positive=positive,
             terminate=config.trigger_termination_ohm == 50,
             disconnect=False,
@@ -303,6 +306,14 @@ class BMEDelayGenerator(DelayGeneratorBase):
             input_positive=True,
             index=self.card_index,
         )
+
+
+def _go_signal_value(name: str) -> int:
+    if name == "master_primary":
+        return MASTER_PRIMARY
+    if name == "local_primary":
+        return LOCAL_PRIMARY
+    return ORDINARY_TOF_GO_SIGNAL
 
 
 def _connection_info(card: BMEPciDelayGeneratorInfo, *, count: int, detect_error: int) -> BMEConnectionInfo:

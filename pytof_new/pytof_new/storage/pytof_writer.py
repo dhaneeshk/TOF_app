@@ -62,6 +62,8 @@ def _bme_header_lines(config: RunConfig) -> list[str]:
         f"## BME_EXTRACTION_FILL_US:{bme.extraction_region_fill_time_s * 1e6:.9g}",
         f"## BME_REPETITION_US:{bme.repetition_period_s * 1e6:.9g}",
         f"## BME_CHANNELS:DIG={bme.digitizer_channel},PUSH={bme.push_channel},PULL={bme.pull_channel}",
+        f"## BME_ENABLED_ROLES:{','.join(bme.enabled_output_roles)}",
+        f"## BME_GO_SIGNAL:{bme.go_signal}",
         f"## BME_POLARITIES:DIG={'POS' if bme.digitizer_polarity_positive else 'NEG'},PUSH={'POS' if bme.push_polarity_positive else 'NEG'},PULL={'POS' if bme.pull_polarity_positive else 'NEG'}",
         f"## BME_DELAYS_US:DIG={bme.digitizer_trigger_delay_s * 1e6:.9g},PUSH={bme.push_trigger_delay_s * 1e6:.9g},PULL={bme.pull_trigger_delay_s * 1e6:.9g}",
         f"## BME_WIDTHS_US:DIG={bme.digitizer_trigger_width_s * 1e6:.9g},PUSH={bme.push_trigger_width_s * 1e6:.9g},PULL={bme.pull_trigger_width_s * 1e6:.9g}",

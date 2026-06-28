@@ -203,6 +203,8 @@ def _write_bme_config_attrs(group: h5py.Group, config: RunConfig) -> None:
     group.attrs["bme_digitizer_channel"] = bme.digitizer_channel
     group.attrs["bme_push_channel"] = bme.push_channel
     group.attrs["bme_pull_channel"] = bme.pull_channel
+    group.attrs["bme_enabled_output_roles"] = ",".join(bme.enabled_output_roles)
+    group.attrs["bme_go_signal"] = bme.go_signal
     group.attrs["bme_digitizer_polarity"] = "POS" if bme.digitizer_polarity_positive else "NEG"
     group.attrs["bme_push_polarity"] = "POS" if bme.push_polarity_positive else "NEG"
     group.attrs["bme_pull_polarity"] = "POS" if bme.pull_polarity_positive else "NEG"
